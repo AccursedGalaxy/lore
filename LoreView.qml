@@ -11,7 +11,21 @@ Item {
   signal closeRequested()
 
   // ---- knobs ----------------------------------------------------------
-  property var    docs: ["kitty.conf", "kitty", "hyprctl", "Hyprland"]   // man pages loaded on start
+  // what Lore searches. kind: "man" (page name) or "md" (file path, ~ allowed)
+  property var    sources: [
+    { kind: "man", name: "kitty.conf" },
+    { kind: "man", name: "kitty" },
+    { kind: "man", name: "hyprctl" },
+    { kind: "man", name: "Hyprland" },
+    { kind: "md",  name: "omarchy",   path: "/usr/share/omarchy/default/agents/skills/omarchy/SKILL.md" },
+    { kind: "md",  name: "hyprland",  path: "/usr/share/omarchy/default/agents/skills/omarchy/hyprland.md" },
+    { kind: "md",  name: "plugins",   path: "/usr/share/omarchy/default/agents/skills/omarchy/plugins.md" },
+    { kind: "md",  name: "theming",   path: "/usr/share/omarchy/default/agents/skills/omarchy/theming.md" },
+    { kind: "md",  name: "hooks",     path: "/usr/share/omarchy/default/agents/skills/omarchy/hooks.md" },
+    { kind: "md",  name: "capture",   path: "/usr/share/omarchy/default/agents/skills/omarchy/capture.md" },
+    { kind: "md",  name: "shell",     path: "/usr/share/omarchy/shell/README.md" },
+  ]
+  readonly property var docs: sources.map(function(s) { return s.name })   // names usable as a query prefix
   property int    maxResults: 8
   property int    columns: 90                       // man wraps at this width
   property string mono: Style.font.resolvedFamily
@@ -30,7 +44,7 @@ Item {
   property int    padY: Style.spacing.huge
   property int    listWidth: Style.space(340)
   property int    rowHeight: Style.space(38)
-  property int    resultsHeight: Style.space(520)
+  property int    maxResultsHeight: Style.space(560)   // results area grows to fit, up to this
   property int    enterMs: 160                      // empty -> results transition
   property bool   rememberQuery: false              // true: reopen with the last search; false: start cleared
   // ---------------------------------------------------------------------
@@ -46,6 +60,9 @@ Item {
 
   // QML copies JS objects across property boundaries, so compare entries by content
   function same(a, b) { return a && b && a.doc === b.doc && a.section === b.section && a.lines[0] === b.lines[0] && a.lines.length === b.lines.length }
+
+  // markdown sections are short, so show them whole from the start
+  readonly property bool showSection: expanded || (current !== null && current.kind === "md")
 
   function back() { if (root.expanded) root.expanded = false; else root.closeRequested() }
   function expand() {
@@ -68,7 +85,11 @@ Item {
     }
   }
 
-  implicitHeight: search.height + (hasResults ? root.resultsHeight : 0)
+  // results area: as tall as the taller of the two panes, capped
+  readonly property int listNeeded: results.length * rowHeight + Style.spacing.lg * 2 + footer.height + Style.spacing.lg + 1
+  readonly property int detailNeeded: detailCol.height + Style.spacing.huge * 2 + 1
+  readonly property int resultsHeight: Math.min(maxResultsHeight, Math.max(listNeeded, detailNeeded))
+  implicitHeight: search.height + (hasResults ? resultsHeight : 0)
 
   function focusSearch() {
     if (!root.rememberQuery) input.text = ""
@@ -119,7 +140,15 @@ Item {
 
   Process {
     id: loader
-    command: ["sh", "-c", "for p in " + root.docs.join(" ") + "; do printf '\\037%s\\n' \"$p\"; MANWIDTH=" + root.columns + " man --no-hyphenation --no-justification -P cat \"$p\" 2>/dev/null | col -bx; done"]
+    // Rendered man pages are cached in ~/.cache/lore (one text file per page) and re-rendered
+    // only when the installed page is newer than the cache. Markdown is read directly.
+    command: ["sh", "-c", "c=$HOME/.cache/lore; mkdir -p $c; " + root.sources.map(function(s) {
+      return s.kind === "md"
+        ? "printf '\\037md:%s\\n' '" + s.name + "'; cat " + s.path.replace(/^~/, "$HOME") + " 2>/dev/null"
+        : "printf '\\037man:%s\\n' '" + s.name + "'; f=$c/" + s.name + ".txt; src=$(man -w '" + s.name + "' 2>/dev/null); "
+          + "if [ ! -s \"$f\" ] || [ -n \"$src\" -a \"$src\" -nt \"$f\" ]; then "
+          + "MANWIDTH=" + root.columns + " man --no-hyphenation --no-justification -P cat '" + s.name + "' 2>/dev/null | col -bx > \"$f\"; fi; cat \"$f\""
+    }).join("; ")]
     running: true
     stdout: StdioCollector { onStreamFinished: { root.entries = Search.parseDocs(this.text); root.runSearch() } }
   }
@@ -253,12 +282,12 @@ Item {
           Text { text: root.current ? root.current.doc : ""; color: root.accent; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall); font.weight: Font.DemiBold }
           Text { text: "›"; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
           Text { text: root.current ? root.current.section : ""; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
-          Text { visible: !root.expanded; text: "     Enter: whole section"; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
+          Text { visible: !root.showSection; text: "     Enter: whole section"; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
         }
 
         Repeater {
           id: sectionRepeater
-          model: root.expanded ? root.sectionEntries : (root.current ? [root.current] : [])
+          model: root.showSection ? root.sectionEntries : (root.current ? [root.current] : [])
           delegate: Entry { entry: modelData; width: detailCol.width; hit: root.expanded && root.same(modelData, root.current) }
         }
       }

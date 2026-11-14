@@ -5,13 +5,37 @@
 // keep inner spacing (tables), only strip the man indent
 function table_safe_trim(l) { return l.replace(/^\s{0,8}/, "").replace(/\s+$/, "") }
 
+// Markdown: "#" headings become sections, blank lines split paragraphs,
+// code fences / lists / tables keep their lines.
+function parseMd(entries, doc, lines) {
+  var section = doc, para = [], fenced = false, cur = null
+  function flush() {
+    if (!para.length) return
+    var keep = fenced || para.some(function(l) { return /^(\s*[-*]\s|\s*\d+\.\s|\|)/.test(l) })
+    if (!cur) { cur = { doc: doc, section: section, header: false, kind: "md", paras: [], lines: [] }; entries.push(cur) }
+    cur.paras.push({ lines: para, table: keep })
+    cur.lines = cur.lines.concat(para)
+    para = []
+  }
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i]
+    if (/^```/.test(l)) { flush(); fenced = !fenced; continue }
+    if (!fenced && /^#+\s/.test(l)) { flush(); section = l.replace(/^#+\s*/, ""); cur = null; continue }
+    if (!fenced && l.trim() === "") { flush(); continue }
+    para.push(fenced ? l.replace(/\s+$/, "") : l.trim())
+  }
+  flush()
+}
+
 function parseDocs(raw) {
   var entries = []
   var docs = raw.split("\x1f")
   for (var d = 1; d < docs.length; d++) {
     var nl = docs[d].indexOf("\n")
-    var doc = docs[d].slice(0, nl)
+    var head = docs[d].slice(0, nl).split(":")        // "<kind>:<name>", kind = man | md
+    var kind = head[0], doc = head[1]
     var lines = docs[d].slice(nl + 1).replace(/\s+$/, "").split("\n")
+    if (kind === "md") { parseMd(entries, doc, lines); continue }
     var section = "", para = [], indent = 0, base = 99, cur = null
     // A header is a one-line paragraph at the section's base indent that is not a sentence
     // (e.g. "dim_opacity"). Everything after it attaches until the next header.
@@ -51,16 +75,34 @@ function parseQuery(q, docNames) {
   return { doc: doc, terms: words }
 }
 
-// Every term must appear somewhere in the entry. Earlier + in the first line scores higher.
+// "bgopac" matches "background_opacity": every char of the term appears in order.
+// Returns a 0..1 tightness (1 = contiguous), or -1 when it does not match.
+function fuzzy(term, text) {
+  var ti = 0, first = -1, last = -1
+  for (var i = 0; i < text.length && ti < term.length; i++) {
+    if (text[i] === term[ti]) { if (first < 0) first = i; last = i; ti++ }
+  }
+  if (ti < term.length) return -1
+  return term.length / (last - first + 1) + (first === 0 ? 0.3 : 0)   // prefer matches at the start
+}
+
+// Every term must appear somewhere in the entry, or fuzzy-match its title.
+// Earlier + in the first line scores higher.
 function score(entry, terms) {
   var head = entry.lines[0].toLowerCase()
+  var title = (entry.header ? head : entry.section.toLowerCase())
   var body = entry.lines.join(" ").toLowerCase()
   var s = 0
   for (var t = 0; t < terms.length; t++) {
     var at = body.indexOf(terms[t])
-    if (at < 0) return -1
-    s += head.indexOf(terms[t]) >= 0 ? 10 : 1
-    s += Math.max(0, 5 - at / 40)                    // early hit in the paragraph
+    if (at >= 0) {
+      s += head.indexOf(terms[t]) >= 0 ? 10 : 1
+      s += Math.max(0, 5 - at / 40)                  // early hit in the paragraph
+      continue
+    }
+    var f = fuzzy(terms[t], title)
+    if (f < 0) return -1
+    s += 6 * f                                       // fuzzy title hit: below an exact one
   }
   return s - entry.lines.length * 0.05                // shorter paragraphs win ties
 }
