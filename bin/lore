@@ -1,0 +1,40 @@
+#!/bin/bash
+# lore                      toggle the Lore overlay
+# lore search [--json] <query...> [-n N]   search the loaded docs (agents: use this)
+# lore docs                 list the loaded doc names
+set -euo pipefail
+
+usage() {
+  sed -n '2,4p' "$0" | sed 's/^# //'
+  exit "${1:-0}"
+}
+
+ipc() {
+  local out
+  out=$(omarchy-shell lore "$@" 2>&1) || { echo "lore: $out" >&2; exit 1; }
+  printf '%s' "$out"
+}
+
+case "${1:-}" in
+  "") exec omarchy-shell shell toggle lore '{}' ;;
+  -h | --help) usage ;;
+  docs) ipc docs | jq -r '.[]' ;;
+  search)
+    shift
+    json=0; limit=5; words=()
+    while (($# > 0)); do
+      case "$1" in
+        --json) json=1; shift ;;
+        -n) limit="${2:-5}"; shift 2 ;;
+        *) words+=("$1"); shift ;;
+      esac
+    done
+    ((${#words[@]})) || usage 1
+    out=$(ipc search "${words[*]}" "$limit")
+    if ((json)); then printf '%s\n' "$out"; exit; fi
+    jq -e 'type == "array"' <<<"$out" >/dev/null || { jq -r '.error' <<<"$out" >&2; exit 1; }
+    jq -e 'length > 0' <<<"$out" >/dev/null || { echo "lore: no results for '${words[*]}'" >&2; exit 1; }
+    jq -r '.[] | "\(.doc) › \(.section)\n\(.title)" + (if .default then "\n  default: \(.default)" else "" end) + "\n\n\(.body)\n\n---"' <<<"$out"
+    ;;
+  *) usage 1 ;;
+esac

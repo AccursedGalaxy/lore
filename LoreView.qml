@@ -1,3 +1,4 @@
+import Quickshell
 import Quickshell.Io
 import QtQuick
 import qs.Commons
@@ -13,7 +14,8 @@ Item {
   signal closeRequested()
 
   // ---- knobs ----------------------------------------------------------
-  // what Lore searches. kind: "man" (page name) or "md" (file path, ~ allowed)
+  // what Lore searches. kind: "man" (page name), "md" (file path, ~ allowed) or "lua" (type stubs).
+  // ~/.config/lore/sources.json, if present, replaces this list (same shape).
   property var    sources: [
     // man pages
     { kind: "man", name: "kitty.conf" },
@@ -176,6 +178,24 @@ Item {
     return html.join("<br><br>")
   }
 
+  // ---- agent / CLI access: `omarchy-shell lore search "<query>" <limit>` ------
+  function plain(e) {                                // entry text without the title / default lines
+    var skip = e.header ? (hasDefault(e) ? 2 : 1) : 0, seen = 0, out = []
+    for (var i = 0; i < e.paras.length; i++) {
+      var lines = e.paras[i].lines
+      if (seen < skip) { lines = lines.slice(skip - seen); seen += e.paras[i].lines.length - lines.length }
+      if (lines.length) out.push(lines.join("\n"))
+    }
+    return out.join("\n\n")
+  }
+  function query(q, limit) {
+    if (root.loading) return JSON.stringify({ error: "lore: docs still loading, retry in a second" })
+    var hits = Search.search(root.entries, q, root.docs, limit > 0 ? limit : 5)
+    return JSON.stringify(hits.map(function(e) {
+      return { doc: e.doc, section: e.section, title: root.title(e), "default": root.hasDefault(e) ? e.lines[1] : null, body: root.plain(e) }
+    }))
+  }
+
   Process {
     id: loader
     // Rendered man pages are cached in ~/.cache/lore (one text file per page) and re-rendered
@@ -187,8 +207,14 @@ Item {
           + "if [ ! -s \"$f\" ] || [ -n \"$src\" -a \"$src\" -nt \"$f\" ]; then "
           + "MANWIDTH=" + root.columns + " man --no-hyphenation --no-justification -P cat '" + s.name + "' 2>/dev/null | col -bx > \"$f\"; fi; cat \"$f\""
     }).join("; ")]
-    running: true
     stdout: StdioCollector { onStreamFinished: { root.entries = Search.parseDocs(this.text); root.loading = false; root.runSearch() } }
+  }
+
+  FileView {                                         // user source list, then start loading
+    path: Quickshell.env("HOME") + "/.config/lore/sources.json"
+    printErrors: false
+    onLoaded: { try { root.sources = JSON.parse(text()) } catch (e) { console.warn("lore: bad sources.json, using defaults:", e) } loader.running = true }
+    onLoadFailed: loader.running = true
   }
 
   Keys.onEscapePressed: root.back()

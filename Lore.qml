@@ -1,5 +1,6 @@
 import Quickshell
 import Quickshell.Wayland
+import Quickshell.Io
 import QtQuick
 import qs.Commons
 import qs.Ui
@@ -29,6 +30,12 @@ Item {
     if (root.shell) root.shell.hide(root.manifest ? root.manifest.id : "lore")
   }
   function toggle() { root.opened ? root.dismiss() : root.open("{}") }
+
+  IpcHandler {                                      // bin/lore and agents call these
+    target: "lore"
+    function search(query: string, limit: int): string { return view.query(query, limit) }
+    function docs(): string { return JSON.stringify(view.docs) }
+  }
 
   PanelWindow {
     id: panel
