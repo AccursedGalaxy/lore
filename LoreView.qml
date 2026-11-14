@@ -3,7 +3,9 @@ import QtQuick
 import qs.Commons
 import "Search.js" as Search
 
-// Search bar on top. Results: one-line rows on the left, the selected one in full on the right.
+// Search bar on top. Results: one-line rows left, the selected hit in full on the right.
+// Enter opens the hit's whole document: rows become its table of contents, the pane shows
+// the full doc, and the search box searches only inside it. Esc goes back.
 // Design knobs at the top. Ranking lives in Search.js.
 Item {
   id: root
@@ -52,30 +54,69 @@ Item {
   property var entries: []
   property var results: []
   property int selected: 0
-  property bool expanded: false                     // Enter: show the hit's whole section
+  property string scopeDoc: ""                      // "" = search everything; else inside this doc only
+  readonly property bool inDoc: scopeDoc !== ""
   readonly property bool hasResults: results.length > 0
   readonly property var current: hasResults ? results[Math.min(selected, results.length - 1)] : null
-  // every entry of the current hit's section, in page order (used when expanded)
-  readonly property var sectionEntries: current ? entries.filter(function(e) { return e.doc === current.doc && e.section === current.section }) : []
+  readonly property var docEntries: inDoc ? entries.filter(function(e) { return e.doc === scopeDoc }) : []
+  // what the pane renders: the whole doc, a whole markdown section, or just the hit
+  readonly property var paneEntries: inDoc ? docEntries
+    : current === null ? []
+    : current.kind === "md" ? entries.filter(function(e) { return e.doc === current.doc && e.section === current.section })
+    : [current]
+
+  // results area: as tall as the taller of the two panes, capped
+  readonly property int listNeeded: results.length * rowHeight + Style.spacing.lg * 2 + footer.height + Style.spacing.lg + 1
+  readonly property int detailNeeded: detailCol.height + Style.spacing.huge * 2 + 1
+  readonly property int resultsHeight: Math.min(maxResultsHeight, Math.max(listNeeded, detailNeeded))
+  implicitHeight: search.height + (hasResults ? resultsHeight : 0)
 
   // QML copies JS objects across property boundaries, so compare entries by content
   function same(a, b) { return a && b && a.doc === b.doc && a.section === b.section && a.lines[0] === b.lines[0] && a.lines.length === b.lines.length }
 
-  // markdown sections are short, so show them whole from the start
-  readonly property bool showSection: expanded || (current !== null && current.kind === "md")
+  function focusSearch() {
+    if (!root.rememberQuery) { input.text = ""; root.scopeDoc = "" }
+    input.forceActiveFocus(); input.selectAll()
+  }
 
-  function back() { if (root.expanded) root.expanded = false; else root.closeRequested() }
-  function expand() {
-    if (!root.hasResults) return
-    root.expanded = true
+  function runSearch() {
+    if (root.inDoc && input.text.trim() === "")
+      root.results = Search.toc(root.docEntries)                      // empty query: table of contents
+    else
+      root.results = Search.search(root.inDoc ? root.docEntries : root.entries, input.text, root.inDoc ? [] : root.docs, root.inDoc ? 40 : root.maxResults)
+    root.selected = 0
     scrollToHit.restart()
   }
+
+  function move(delta) {
+    if (!hasResults) return
+    root.selected = (root.selected + delta + results.length) % results.length
+    list.positionViewAtIndex(root.selected, ListView.Contain)
+    scrollToHit.restart()
+  }
+
+  function openDoc() {                               // Enter
+    if (!root.current || root.inDoc) return
+    var hit = root.current
+    root.scopeDoc = hit.doc
+    input.text = ""                                   // triggers runSearch -> table of contents
+    for (var i = 0; i < root.results.length; i++)     // land on the hit's section
+      if (root.results[i].section === hit.section) { root.selected = i; break }
+    scrollToHit.restart()
+  }
+
+  function back() {                                  // Esc
+    if (root.inDoc) { root.scopeDoc = ""; input.text = ""; return }
+    root.closeRequested()
+  }
+
   Timer {                                            // after layout, scroll the pane to the hit
     id: scrollToHit
     interval: 120
     onTriggered: {
-      for (var i = 0; i < sectionRepeater.count; i++) {
-        var item = sectionRepeater.itemAt(i)
+      if (!root.inDoc) { detail.contentY = 0; return }
+      for (var i = 0; i < paneRepeater.count; i++) {
+        var item = paneRepeater.itemAt(i)
         if (item && root.same(item.entry, root.current)) {
           detail.contentY = detailCol.y + item.y - Style.spacing.lg
           detail.returnToBounds()
@@ -85,37 +126,13 @@ Item {
     }
   }
 
-  // results area: as tall as the taller of the two panes, capped
-  readonly property int listNeeded: results.length * rowHeight + Style.spacing.lg * 2 + footer.height + Style.spacing.lg + 1
-  readonly property int detailNeeded: detailCol.height + Style.spacing.huge * 2 + 1
-  readonly property int resultsHeight: Math.min(maxResultsHeight, Math.max(listNeeded, detailNeeded))
-  implicitHeight: search.height + (hasResults ? resultsHeight : 0)
-
-  function focusSearch() {
-    if (!root.rememberQuery) input.text = ""
-    root.expanded = false
-    input.forceActiveFocus(); input.selectAll()
-  }
-
-  function runSearch() {
-    root.results = Search.search(root.entries, input.text, root.docs, root.maxResults)
-    root.selected = 0
-  }
-
-  function move(delta) {
-    if (!hasResults) return
-    root.selected = (root.selected + delta + results.length) % results.length
-    list.positionViewAtIndex(root.selected, ListView.Contain)
-    if (root.expanded) root.expand(); else detail.contentY = 0
-  }
-
   // ---- description rendering (StyledText) ------------------------------
   function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;") }
   function colorize(t) {
     var out = esc(t)
     out = out.replace(/&lt;#[^&>]*&gt;/g, function(m) { return "<font color='" + root.dim + "'>" + m + "</font>" })   // <#anchor> refs
     out = out.replace(/\b[a-z]+(?:_[a-z0-9]+)+\b/g, function(m) { return "<font color='" + root.optionColor + "'>" + m + "</font>" }) // option_names
-    var terms = Search.parseQuery(input.text, root.docs).terms
+    var terms = Search.parseQuery(input.text, root.inDoc ? [] : root.docs).terms
     for (var i = 0; i < terms.length; i++) {
       var re = new RegExp("(" + terms[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi")
       out = out.replace(re, "<b><font color='" + root.accent + "'>$1</font></b>")
@@ -161,19 +178,29 @@ Item {
     width: parent.width
     height: input.implicitHeight + root.padY * 2
 
+    // scope chip: "kitty.conf ›" when searching inside one doc
+    Text {
+      id: scope
+      x: root.padX; y: root.padY
+      visible: root.inDoc
+      text: root.scopeDoc + " ›  "
+      color: root.accent
+      font.family: root.mono
+      font.pixelSize: root.px(Style.font.display)
+    }
     TextInput {
       id: input
-      x: root.padX; y: root.padY
-      width: parent.width - root.padX * 2
+      x: root.padX + (root.inDoc ? scope.width : 0); y: root.padY
+      width: parent.width - x - root.padX
       color: root.fg
       selectionColor: Util.alpha(root.accent, 0.35)
       selectedTextColor: root.fg
       font.family: root.mono
       font.pixelSize: root.px(Style.font.display)
       clip: true
-      onTextChanged: { root.expanded = false; root.runSearch() }
+      onTextChanged: root.runSearch()
       Keys.onEscapePressed: root.back()
-      Keys.onReturnPressed: root.expand()
+      Keys.onReturnPressed: root.openDoc()
       Keys.onDownPressed: root.move(1)
       Keys.onUpPressed: root.move(-1)
       Keys.onTabPressed: root.move(1)
@@ -181,7 +208,7 @@ Item {
     Text {
       x: input.x; y: input.y; width: input.width
       visible: input.text === ""
-      text: "Search docs"
+      text: root.inDoc ? "Search inside" : "Search docs"
       elide: Text.ElideRight
       color: root.dim
       font: input.font
@@ -203,7 +230,7 @@ Item {
     Rectangle { width: parent.width; height: 1; color: root.hairline }                       // under the bar
     Rectangle { x: root.listWidth; y: 1; width: 1; height: parent.height - 1; color: root.hairline } // between panes
 
-    // left: one line per hit
+    // left: one line per hit (or per section when browsing a doc)
     ListView {
       id: list
       x: Style.spacing.lg
@@ -220,13 +247,13 @@ Item {
         radius: Style.cornerRadius
         color: index === root.selected ? root.rowSelected : (hover.hovered ? Style.hoverFill : "transparent")
         HoverHandler { id: hover }
-        TapHandler { onTapped: { root.selected = index; detail.contentY = 0 } }
+        TapHandler { onTapped: { root.selected = index; scrollToHit.restart() } }
 
         Text {
           x: Style.spacing.xxl
           anchors.verticalCenter: parent.verticalCenter
           width: parent.width - x - doc.width - Style.spacing.xxl * 2
-          text: root.title(modelData)
+          text: root.inDoc && input.text.trim() === "" ? modelData.section : root.title(modelData)   // contents vs hits
           elide: Text.ElideRight
           color: index === root.selected ? root.fg : Util.alpha(root.fg, 0.8)
           font.family: root.mono
@@ -238,7 +265,7 @@ Item {
           anchors.right: parent.right
           anchors.rightMargin: Style.spacing.xxl
           anchors.verticalCenter: parent.verticalCenter
-          text: modelData.doc
+          text: root.inDoc ? "" : modelData.doc
           color: root.dim
           font.family: root.mono
           font.pixelSize: root.px(Style.font.caption)
@@ -252,13 +279,14 @@ Item {
       anchors.bottom: parent.bottom
       anchors.bottomMargin: Style.spacing.lg
       height: implicitHeight + Style.spacing.md
-      text: root.results.length + (root.results.length === 1 ? " result" : " results")
+      text: root.inDoc && input.text.trim() === "" ? root.results.length + " sections   Esc: back"
+          : root.results.length + (root.results.length === 1 ? " result" : " results") + (root.inDoc ? "   Esc: back" : "   Enter: open doc")
       color: root.dim
       font.family: root.mono
       font.pixelSize: root.px(Style.font.caption)
     }
 
-    // right: the selected hit in full
+    // right: the hit in full, or the whole document
     Flickable {
       id: detail
       x: root.listWidth + 1
@@ -282,13 +310,12 @@ Item {
           Text { text: root.current ? root.current.doc : ""; color: root.accent; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall); font.weight: Font.DemiBold }
           Text { text: "›"; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
           Text { text: root.current ? root.current.section : ""; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
-          Text { visible: !root.showSection; text: "     Enter: whole section"; color: root.dim; font.family: root.mono; font.pixelSize: root.px(Style.font.bodySmall) }
         }
 
         Repeater {
-          id: sectionRepeater
-          model: root.showSection ? root.sectionEntries : (root.current ? [root.current] : [])
-          delegate: Entry { entry: modelData; width: detailCol.width; hit: root.expanded && root.same(modelData, root.current) }
+          id: paneRepeater
+          model: root.paneEntries
+          delegate: Entry { entry: modelData; width: detailCol.width; hit: root.inDoc && root.same(modelData, root.current) }
         }
       }
     }

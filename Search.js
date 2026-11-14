@@ -124,3 +124,15 @@ function search(entries, q, docNames, limit) {
   hits.sort(function(a, b) { return b.score - a.score })
   return hits.slice(0, limit).map(function(h) { return h.entry })
 }
+
+// Table of contents: the first entry of every section, in page order.
+function toc(entries) {
+  var out = [], seen = {}
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i]
+    if (seen[e.section]) continue
+    seen[e.section] = true
+    out.push(e)
+  }
+  return out
+}
