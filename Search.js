@@ -27,6 +27,25 @@ function parseMd(entries, doc, lines) {
   flush()
 }
 
+// Lua type stubs (---@class / ---@alias blocks): one entry per class, its fields as a table.
+function parseLuaStub(entries, doc, lines) {
+  var cur = null
+  function start(name, section) {
+    cur = { doc: doc, section: section, header: true, kind: "lua", paras: [{ lines: [name], table: false }, { lines: [], table: true }], lines: [name] }
+    entries.push(cur)
+  }
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i], m
+    if ((m = l.match(/^---@class\s+(\S+)/))) { start(m[1], m[1]); continue }
+    if ((m = l.match(/^---@alias\s+(\S+)/))) { start(m[1], m[1]); continue }
+    if (!cur) continue
+    if ((m = l.match(/^---@field\s+(.*)/)) || (m = l.match(/^---\|\s*(.*)/))) {
+      var row = m[1].replace(/^\['([^']+)'\]/, "$1")      // ['input.foo'] -> input.foo
+      cur.paras[1].lines.push(row); cur.lines.push(row)
+    } else if (!/^---/.test(l)) cur = null                 // block ended
+  }
+}
+
 function parseDocs(raw) {
   var entries = []
   var docs = raw.split("\x1f")
@@ -36,13 +55,15 @@ function parseDocs(raw) {
     var kind = head[0], doc = head[1]
     var lines = docs[d].slice(nl + 1).replace(/\s+$/, "").split("\n")
     if (kind === "md") { parseMd(entries, doc, lines); continue }
+    if (kind === "lua") { parseLuaStub(entries, doc, lines); continue }
     var section = "", para = [], indent = 0, base = 99, cur = null
     // A header is a one-line paragraph at the section's base indent that is not a sentence
     // (e.g. "dim_opacity"). Everything after it attaches until the next header.
     // Prose paragraphs with no header become entries of their own (header: false).
     function flush() {
       if (!para.length) return
-      var header = para.length === 1 && indent <= base && !/[.:]$/.test(para[0])
+      // mdoc pages (fzf, git, tmux) glue "--flag" to its description with no blank line: the flag is a header too.
+      var header = para.length === 1 && indent <= base && !/[.:]$/.test(para[0]) || /^-{1,2}[A-Za-z]/.test(para[0])
       var table = para.some(function(l) { return /[\u2500-\u257f]/.test(l) })   // box-drawing chars
       if (header || !cur) {
         cur = { doc: doc, section: section, header: header, paras: [], lines: [] }
@@ -69,8 +90,9 @@ function parseQuery(q, docNames) {
   var words = q.trim().toLowerCase().split(/\s+/).filter(Boolean)
   var doc = null
   if (words.length > 1) {
-    for (var i = 0; i < docNames.length; i++)
-      if (docNames[i].toLowerCase().indexOf(words[0]) === 0) { doc = docNames[i]; words.shift(); break }
+    var i = docNames.indexOf(words[0])                 // exact name first so "hyprland" (md) beats "Hyprland" (man)
+    if (i < 0) i = docNames.map(function(n) { return n.toLowerCase() }).indexOf(words[0])
+    if (i >= 0) { doc = docNames[i]; words.shift() }
   }
   return { doc: doc, terms: words }
 }
@@ -101,10 +123,10 @@ function score(entry, terms) {
       continue
     }
     var f = fuzzy(terms[t], title)
-    if (f < 0) return -1
+    if (f < 0.3) return -1                           // loose fuzzy hits are noise
     s += 6 * f                                       // fuzzy title hit: below an exact one
   }
-  return s - entry.lines.length * 0.05                // shorter paragraphs win ties
+  return s - Math.min(0.9, entry.lines.length * 0.05)   // shorter paragraphs win ties; capped so long entries stay findable
 }
 
 var MIN_BODY = 60          // chars; shorter entries are skipped
@@ -121,6 +143,7 @@ function search(entries, q, docNames, limit) {
     var s = score(e, pq.terms)
     if (s >= 0) hits.push({ entry: e, score: s + (e.header ? HEADER_BONUS : 0) })
   }
+  if (!hits.length && pq.doc) return search(entries, q, [], limit)   // "kitty opacity": kitty(1) has none, so search everything
   hits.sort(function(a, b) { return b.score - a.score })
   return hits.slice(0, limit).map(function(h) { return h.entry })
 }
