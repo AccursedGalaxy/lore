@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "lore",
+  "name": "Lore",
+  "version": "0.1.0",
+  "author": "AccursedGalaxy",
+  "license": "MIT",
+  "description": "Docs for this machine. One search box over man pages and more.",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": { "overlay": "Lore.qml" }
+}
