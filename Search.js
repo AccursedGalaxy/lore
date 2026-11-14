@@ -118,6 +118,7 @@ function score(entry, terms) {
   for (var t = 0; t < terms.length; t++) {
     var at = body.indexOf(terms[t])
     if (at >= 0) {
+      if (title === terms[t] || title.slice(-terms[t].length - 1) === "." + terms[t]) s += 8   // whole title ("configopt.general" = HL.ConfigOpt.General), not a sibling
       s += head.indexOf(terms[t]) >= 0 ? 10 : 1
       s += Math.max(0, 5 - at / 40)                  // early hit in the paragraph
       continue
