@@ -62,15 +62,17 @@ function parseDocs(raw) {
     // Prose paragraphs with no header become entries of their own (header: false).
     function flush() {
       if (!para.length) return
-      // mdoc pages (fzf, git, tmux) glue "--flag" to its description with no blank line: the flag is a header too.
-      var header = para.length === 1 && indent <= base && !/[.:]$/.test(para[0]) || /^-{1,2}[A-Za-z]/.test(para[0])
+      var rest = para.slice(1).map(function(l) { return l.search(/\S/) })
+      // a one-liner at the section's base indent ("dim_opacity"), or a line with its description
+      // indented under it ("select(f)" in jq, "--flag" in mdoc pages)
+      var header = para.length === 1 ? indent <= base && !/[.:]$/.test(para[0]) : indent < Math.min.apply(null, rest)
       var table = para.some(function(l) { return /[\u2500-\u257f]/.test(l) })   // box-drawing chars
       if (header || !cur) {
         cur = { doc: doc, section: section, header: header, paras: [], lines: [] }
         entries.push(cur)
       }
-      cur.paras.push({ lines: para, table: table })
-      cur.lines = cur.lines.concat(para)
+      cur.paras.push({ lines: para.map(table_safe_trim), table: table })
+      cur.lines = cur.lines.concat(para.map(table_safe_trim))
       para = []
     }
     for (var i = 1; i < lines.length - 1; i++) {       // skip man header + footer line
@@ -78,60 +80,35 @@ function parseDocs(raw) {
       if (/^\S/.test(l)) { flush(); section = l.trim(); base = 99; cur = null; continue }
       if (l.trim() === "") { flush(); continue }
       if (!para.length) { indent = l.search(/\S/); base = Math.min(base, indent) }
-      para.push(table_safe_trim(l))
+      para.push(l)
     }
     flush()
   }
+  for (var k = 0; k < entries.length; k++) entries[k].id = k   // QML copies objects; compare entries by id
   return entries
 }
 
-// "kitty opacity" -> { doc: "kitty", terms: ["opacity"] } when "kitty" names a loaded doc.
+// "kitty opacity" -> { doc: "kitty", docs: ["kitty", "kitty.conf"], terms: ["opacity"] }
+// when some loaded doc name starts with "kitty".
 function parseQuery(q, docNames) {
   var words = q.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  var doc = null
-  if (words.length > 1) {
-    var i = docNames.indexOf(words[0])                 // exact name first so "hyprland" (md) beats "Hyprland" (man)
-    if (i < 0) i = docNames.map(function(n) { return n.toLowerCase() }).indexOf(words[0])
-    if (i >= 0) { doc = docNames[i]; words.shift() }
-  }
-  return { doc: doc, terms: words }
+  var docs = words.length > 1 ? docNames.filter(function(n) { return n.toLowerCase().indexOf(words[0]) === 0 }) : []
+  return { doc: docs.length ? words.shift() : null, docs: docs, terms: words }
 }
 
-// "bgopac" matches "background_opacity": every char of the term appears in order.
-// Returns a 0..1 tightness (1 = contiguous), or -1 when it does not match.
-function fuzzy(term, text) {
-  var ti = 0, first = -1, last = -1
-  for (var i = 0; i < text.length && ti < term.length; i++) {
-    if (text[i] === term[ti]) { if (first < 0) first = i; last = i; ti++ }
-  }
-  if (ti < term.length) return -1
-  return term.length / (last - first + 1) + (first === 0 ? 0.3 : 0)   // prefer matches at the start
-}
-
-// Every term must appear somewhere in the entry, or fuzzy-match its title.
-// Earlier + in the first line scores higher.
+// Every term must appear in the entry. Title hit beats body hit; title prefix beats both.
 function score(entry, terms) {
-  var head = entry.lines[0].toLowerCase()
-  var title = (entry.header ? head : entry.section.toLowerCase())
+  var title = (entry.header ? entry.lines[0] : entry.section).toLowerCase()
   var body = entry.lines.join(" ").toLowerCase()
   var s = 0
   for (var t = 0; t < terms.length; t++) {
-    var at = body.indexOf(terms[t])
-    if (at >= 0) {
-      if (title === terms[t] || title.slice(-terms[t].length - 1) === "." + terms[t]) s += 8   // whole title ("configopt.general" = HL.ConfigOpt.General), not a sibling
-      s += head.indexOf(terms[t]) >= 0 ? 10 : 1
-      s += Math.max(0, 5 - at / 40)                  // early hit in the paragraph
-      continue
-    }
-    var f = fuzzy(terms[t], title)
-    if (f < 0.3) return -1                           // loose fuzzy hits are noise
-    s += 6 * f                                       // fuzzy title hit: below an exact one
+    var at = title.indexOf(terms[t])
+    if (at >= 0) s += at === 0 ? 3 : 2
+    else if (body.indexOf(terms[t]) >= 0) s += 1
+    else return -1
   }
-  return s - Math.min(0.9, entry.lines.length * 0.05)   // shorter paragraphs win ties; capped so long entries stay findable
+  return s
 }
-
-var MIN_BODY = 60          // chars; shorter entries are skipped
-var HEADER_BONUS = 4       // options ("dim_opacity") rank above prose
 
 function search(entries, q, docNames, limit) {
   var pq = parseQuery(q, docNames)
@@ -139,13 +116,11 @@ function search(entries, q, docNames, limit) {
   var hits = []
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i]
-    if (pq.doc && e.doc !== pq.doc) continue
-    if (e.lines.join(" ").length < MIN_BODY) continue       // a bare heading has nothing to show
+    if (pq.doc && pq.docs.indexOf(e.doc) < 0) continue
     var s = score(e, pq.terms)
-    if (s >= 0) hits.push({ entry: e, score: s + (e.header ? HEADER_BONUS : 0) })
+    if (s >= 0) hits.push({ entry: e, score: s })
   }
-  if (!hits.length && pq.doc) return search(entries, q, [], limit)   // "kitty opacity": kitty(1) has none, so search everything
-  hits.sort(function(a, b) { return b.score - a.score })
+  hits.sort(function(a, b) { return b.score - a.score || a.entry.id - b.entry.id })   // ties: page order
   return hits.slice(0, limit).map(function(h) { return h.entry })
 }
 

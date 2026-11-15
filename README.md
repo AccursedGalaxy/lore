@@ -23,12 +23,13 @@ o.bind("SUPER + SHIFT + L", "Lore (docs)", "omarchy-shell shell toggle lore '{}'
 | Key | Action |
 |---|---|
 | Type | Search everything |
-| `kitty.conf opacity` | Search inside one doc. The first word must match a doc name exactly |
+| `kitty opacity` | Search inside matching docs. The first word must start a doc name (`kitty` covers kitty and kitty.conf) |
 | Up / Down, Tab / Shift+Tab | Move through results |
 | Enter, or double-click | Open the doc. The left pane becomes its table of contents and the box searches inside it |
-| Esc | Back out of the doc, then close |
+| Esc | Close |
+| Backspace (empty field) | Back out of the doc |
 
-Ranking is simple. A hit in an option name beats a hit in prose. An exact hit beats a fuzzy one, though fuzzy still works: `bgopac` finds `background_opacity`. When two entries tie, the shorter one comes first.
+Ranking is simple. Every word must appear in the entry. A hit in the title beats a hit in prose, and a title that starts with the word beats both. Ties keep page order.
 
 ## Agents and scripts
 

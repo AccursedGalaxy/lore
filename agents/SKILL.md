@@ -18,7 +18,7 @@ lore docs                        # which docs are loaded
 
 Put a doc name first to search inside one doc: `lore search kitty.conf opacity`. Doc names come from `lore docs`.
 
-Fuzzy matching works on option names: `lore search bgopac` finds `background_opacity`.
+Every word must appear in the entry. Search for words that appear in the option name or its description.
 
 ## When to use it
 

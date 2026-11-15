@@ -8,7 +8,6 @@ Column {
   property bool hit: false                          // the entry the search landed on (expanded mode)
   property var view: null                           // the LoreView, set by the delegate
   spacing: Style.spacing.lg
-  topPadding: entry.hit ? 0 : 0
 
   Text {
     text: entry.entry ? view.title(entry.entry) : ""

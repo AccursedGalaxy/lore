@@ -4,10 +4,6 @@ import QtQuick
 import qs.Commons
 import "Search.js" as Search
 
-// Search bar on top. Results: one-line rows left, the selected hit in full on the right.
-// Enter opens the hit's whole document: rows become its table of contents, the pane shows
-// the full doc, and the search box searches only inside it. Esc goes back.
-// Design knobs at the top. Ranking lives in Search.js.
 Item {
   id: root
 
@@ -75,6 +71,7 @@ Item {
   property string scopeDoc: ""                      // "" = search everything; else inside this doc only
   property var jump: null                           // the hit Enter was pressed on; the pane scrolls to it
   readonly property bool inDoc: scopeDoc !== ""
+  readonly property int hitId: jump ? jump.id : current ? current.id : -1   // entry the pane scrolls to / marks
   readonly property bool hasResults: results.length > 0
   readonly property string queryDoc: inDoc ? "" : (Search.parseQuery(input.text, docs).doc || "")   // "kitty opacity" -> kitty
   property bool loading: true
@@ -90,9 +87,6 @@ Item {
   readonly property int detailNeeded: detailCol.height + Style.spacing.huge * 2 + 1
   readonly property int resultsHeight: Math.min(maxResultsHeight, Math.max(listNeeded, detailNeeded))
   implicitHeight: search.height + (hasResults ? resultsHeight : 0)
-
-  // QML copies JS objects across property boundaries, so compare entries by content
-  function same(a, b) { return a && b && a.doc === b.doc && a.section === b.section && a.lines[0] === b.lines[0] && a.lines.length === b.lines.length }
 
   function focusSearch() {
     if (!root.rememberQuery) { input.text = ""; root.scopeDoc = ""; root.runSearch() }   // explicit: text may already be ""
@@ -127,9 +121,8 @@ Item {
     scrollToHit.restart()
   }
 
-  function back() {                                  // Esc
-    if (root.inDoc) { root.scopeDoc = ""; input.text = ""; root.runSearch(); return }
-    root.closeRequested()
+  function back() {                                  // Backspace on an empty field inside a doc
+    root.scopeDoc = ""; input.text = ""; root.runSearch()
   }
 
   Timer {                                            // after layout, scroll the pane to the hit
@@ -139,7 +132,7 @@ Item {
       if (!root.inDoc) { detail.contentY = 0; return }
       for (var i = 0; i < paneRepeater.count; i++) {
         var item = paneRepeater.itemAt(i)
-        if (item && root.same(item.entry, root.jump || root.current)) {
+        if (item && item.entry.id === root.hitId) {
           detail.contentY = detailCol.y + item.y - Style.spacing.lg
           detail.returnToBounds()
           return
@@ -150,44 +143,33 @@ Item {
 
   // ---- description rendering (StyledText) ------------------------------
   function esc(t) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;") }
-  function colorize(t) {
-    // mark query hits on the raw text with \x01..\x02 so the tags added below can't be matched
+  function colorize(t) {                             // one pass over all terms so a later term can't match an inserted tag
     var terms = Search.parseQuery(input.text, root.inDoc ? [] : root.docs).terms
-    for (var i = 0; i < terms.length; i++) {
-      var re = new RegExp("(" + terms[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi")
-      t = t.replace(re, "\x01$1\x02")
-    }
-    var out = esc(t)
-    out = out.replace(/&lt;#[^&>]*&gt;/g, function(m) { return "<font color='" + root.dim + "'>" + m + "</font>" })   // <#anchor> refs
-    out = out.replace(/\b[a-z]+(?:_[a-z0-9]+)+\b/g, function(m) { return "<font color='" + root.optionColor + "'>" + m + "</font>" }) // option_names
-    return out.replace(/\x01/g, "<b><font color='" + root.accent + "'>").replace(/\x02/g, "</font></b>")
+    if (!terms.length) return esc(t)
+    var re = new RegExp("(" + terms.map(function(w) { return esc(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") }).join("|") + ")", "gi")
+    return esc(t).replace(re, "<b><font color='" + root.accent + "'>$1</font></b>")
   }
   // does the entry's second line carry the default value? ("dim_opacity 0.4")
   function hasDefault(e) { return e.header && e.lines.length > 1 && e.lines[1].indexOf(e.lines[0].split(/[ ,]/)[0]) === 0 }
   function title(e) { return e.header ? e.lines[0] : e.section }
-  function body(e) {
-    var skip = e.header ? (hasDefault(e) ? 2 : 1) : 0          // lines already shown as title / chip
-    var html = [], seen = 0
+  // paragraphs minus the lines already shown as title / default chip
+  function paras(e) {
+    var skip = e.header ? (hasDefault(e) ? 2 : 1) : 0, out = []
     for (var i = 0; i < e.paras.length; i++) {
-      var p = e.paras[i], lines = p.lines
-      if (seen < skip) { lines = lines.slice(skip - seen); seen += p.lines.length - lines.length }
-      if (!lines.length) continue
-      html.push(p.table ? "<font color='" + root.dim + "'>" + lines.map(function(l) { return esc(l).replace(/ /g, "&nbsp;") }).join("<br>") + "</font>"
-                        : colorize(lines.join(" ")))
+      var lines = e.paras[i].lines.slice(skip); skip -= e.paras[i].lines.length - lines.length
+      if (lines.length) out.push({ lines: lines, table: e.paras[i].table })
     }
-    return html.join("<br><br>")
+    return out
+  }
+  function body(e) {
+    return paras(e).map(function(p) {
+      return p.table ? "<font color='" + root.dim + "'>" + p.lines.map(function(l) { return esc(l).replace(/ /g, "&nbsp;") }).join("<br>") + "</font>"
+                     : colorize(p.lines.join(" "))
+    }).join("<br><br>")
   }
 
   // ---- agent / CLI access: `omarchy-shell lore search "<query>" <limit>` ------
-  function plain(e) {                                // entry text without the title / default lines
-    var skip = e.header ? (hasDefault(e) ? 2 : 1) : 0, seen = 0, out = []
-    for (var i = 0; i < e.paras.length; i++) {
-      var lines = e.paras[i].lines
-      if (seen < skip) { lines = lines.slice(skip - seen); seen += e.paras[i].lines.length - lines.length }
-      if (lines.length) out.push(lines.join("\n"))
-    }
-    return out.join("\n\n")
-  }
+  function plain(e) { return paras(e).map(function(p) { return p.lines.join("\n") }).join("\n\n") }
   function query(q, limit) {
     if (root.loading) return JSON.stringify({ error: "lore: docs still loading, retry in a second" })
     var hits = Search.search(root.entries, q, root.docs, limit > 0 ? limit : 5)
@@ -217,7 +199,7 @@ Item {
     onLoadFailed: loader.running = true
   }
 
-  Keys.onEscapePressed: root.back()
+  Keys.onEscapePressed: root.closeRequested()
 
   // ---- search field: no border of its own, the card border is the border
   Item {
@@ -246,8 +228,8 @@ Item {
       font.pixelSize: root.px(Style.font.display)
       clip: true
       onTextChanged: root.runSearch()
-      Keys.onEscapePressed: root.back()
       Keys.onReturnPressed: root.openDoc()
+      Keys.onPressed: (ev) => { if (ev.key === Qt.Key_Backspace && root.inDoc && input.text === "") { root.back(); ev.accepted = true } }
       Keys.onDownPressed: root.move(1)
       Keys.onUpPressed: root.move(-1)
       Keys.onTabPressed: root.move(1)
@@ -342,8 +324,8 @@ Item {
       anchors.bottomMargin: Style.spacing.lg
       height: implicitHeight + Style.spacing.md
       verticalAlignment: Text.AlignBottom
-      text: root.inDoc && input.text.trim() === "" ? root.results.length + " sections   Esc: back"
-          : root.results.length + (root.results.length === 1 ? " result" : " results") + (root.queryDoc ? " in " + root.queryDoc : "") + (root.inDoc ? "   Esc: back" : "   Enter: open doc")
+      text: root.inDoc && input.text.trim() === "" ? root.results.length + " sections   Backspace: back"
+          : root.results.length + (root.results.length === 1 ? " result" : " results") + (root.queryDoc ? " in " + root.queryDoc : "") + (root.inDoc ? "   Backspace: back" : "   Enter: open doc")
       color: root.dim
       font.family: root.mono
       font.pixelSize: root.px(Style.font.caption)
@@ -378,7 +360,7 @@ Item {
         Repeater {
           id: paneRepeater
           model: root.paneEntries
-          delegate: Entry { entry: modelData; view: root; width: detailCol.width; hit: root.inDoc && root.same(modelData, root.jump || root.current)
+          delegate: Entry { entry: modelData; view: root; width: detailCol.width; hit: root.inDoc && modelData.id === root.hitId
         onYChanged: if (hit) scrollToHit.restart() }
         }
       }

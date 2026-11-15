@@ -5,7 +5,6 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// The window: a search bar that grows into a result list. Toggle: `lore`
 Item {
   id: root
 
@@ -13,12 +12,11 @@ Item {
   property var manifest: null
   property bool opened: false
 
-  // ---- knobs ----------------------------------------------------------
+  // knobs
   property int barWidth: Style.space(760)          // empty state
   property int cardWidth: Style.space(1240)        // with results
   property int topOffset: Style.space(180)          // distance from top of screen
   property int radius: Style.space(40)              // cap; the empty bar is a full pill
-  // ---------------------------------------------------------------------
 
   function open(payloadJson) {
     root.opened = true
@@ -31,7 +29,8 @@ Item {
   }
   function toggle() { root.opened ? root.dismiss() : root.open("{}") }
 
-  IpcHandler {                                      // bin/lore and agents call these
+  // Agents will call this
+  IpcHandler {
     target: "lore"
     function search(query: string, limit: int): string { return view.query(query, limit) }
     function docs(): string { return JSON.stringify(view.docs) }
@@ -45,7 +44,8 @@ Item {
     WlrLayershell.namespace: "lore"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
-    exclusionMode: ExclusionMode.Ignore               // cover the bar too, no undimmed strip
+    // Cover the top bar as well
+    exclusionMode: ExclusionMode.Ignore
 
     Rectangle { anchors.fill: parent; color: Color.menu.scrim }
     MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
